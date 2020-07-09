@@ -488,6 +488,20 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 labels[:, 3] = ratio[0] * w * (x[:, 1] + x[:, 3] / 2) + pad[0]
                 labels[:, 4] = ratio[1] * h * (x[:, 2] + x[:, 4] / 2) + pad[1]
 
+
+        # if self.augment:
+        #
+        #     ###added by lz
+        #     ###random rotate
+        #     if labels.shape[0]!=0:
+        #
+        #         random_range = [0, 90, 180, 270]
+        #         box=labels[:,1:]
+        #         img,box=self.Rotate_with_box(img,random.choice(random_range),box)
+        #
+        #         labels[:,1:]=box
+
+
         if self.augment:
             # Augment imagespace
             if not self.mosaic:
@@ -544,6 +558,94 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
+
+    def Rotate_with_box(self,src, angle, boxes=None, center=None, scale=1.0):
+        '''
+        :param src: src image
+        :param label: label should be numpy array with [[x1,y1],
+                                                        [x2,y2],
+                                                        [x3,y3]...]
+        :param angle:angel
+        :param center:
+        :param scale:
+        :return: the rotated image and the points
+        '''
+
+        def Rotate_coordinate(label, rt_matrix):
+            if rt_matrix.shape[0] == 2:
+                rt_matrix = np.row_stack((rt_matrix, np.asarray([0, 0, 1])))
+            full_label = np.row_stack((label, np.ones(shape=(1, label.shape[1]))))
+            label_rotated = np.dot(rt_matrix, full_label)
+            label_rotated = label_rotated[0:2, :]
+            return label_rotated
+
+        def box_to_point(boxes):
+            '''
+
+            :param boxes: [n,x,y,x,y]
+            :return: [4n,x,y]
+            '''
+            ##caution the boxes are ymin xmin ymax xmax
+            points_set = np.zeros(shape=[4 * boxes.shape[0], 2])
+
+            for i in range(boxes.shape[0]):
+                points_set[4 * i] = np.array([boxes[i][0], boxes[i][1]])
+                points_set[4 * i + 1] = np.array([boxes[i][0], boxes[i][3]])
+                points_set[4 * i + 2] = np.array([boxes[i][2], boxes[i][3]])
+                points_set[4 * i + 3] = np.array([boxes[i][2], boxes[i][1]])
+
+            return points_set
+
+        def point_to_box(points):
+            boxes = []
+            points = points.reshape([-1, 4, 2])
+
+            for i in range(points.shape[0]):
+                box = [np.min(points[i][:, 0]), np.min(points[i][:, 1]), np.max(points[i][:, 0]),
+                       np.max(points[i][:, 1])]
+
+                boxes.append(box)
+
+            return np.array(boxes)
+
+        label = box_to_point(boxes)
+        image = src
+        (h, w) = image.shape[:2]
+        # 若未指定旋转中心，则将图像中心设为旋转中心
+
+        if center is None:
+            center = (w / 2, h / 2)
+        # 执行旋转
+        M = cv2.getRotationMatrix2D(center, angle, scale)
+
+        new_size = Rotate_coordinate(np.array([[0, w, w, 0],
+                                               [0, 0, h, h]]), M)
+
+        new_h, new_w = np.max(new_size[1]) - np.min(new_size[1]), np.max(new_size[0]) - np.min(new_size[0])
+
+        scale = min(h / new_h, w / new_w)
+
+        M = cv2.getRotationMatrix2D(center, angle, scale)
+
+        if boxes is None:
+            for i in range(image.shape[2]):
+                image[:, :, i] = cv2.warpAffine(image[:, :, i], M, (w, h), flags=cv2.INTER_CUBIC,
+                                                borderMode=cv2.BORDER_CONSTANT)
+            return image, None
+        else:
+            label = label.T
+            ####make it as a 3x3 RT matrix
+            full_M = np.row_stack((M, np.asarray([0, 0, 1])))
+            img_rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT)
+            ###make the label as 3xN matrix
+            full_label = np.row_stack((label, np.ones(shape=(1, label.shape[1]))))
+            label_rotated = np.dot(full_M, full_label)
+            label_rotated = label_rotated[0:2, :]
+            # label_rotated = label_rotated.astype(np.int32)
+            label_rotated = label_rotated.T
+
+            boxes_rotated = point_to_box(label_rotated)
+            return img_rotated, boxes_rotated
 
 
 def load_image(self, index):
